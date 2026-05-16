@@ -1,0 +1,8 @@
+{
+  "name": "FanPulse AI",
+  "description": "An AI-powered gamification platform for tournament fan engagement, featuring predictions, streaks, and personalized AI challenges.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
