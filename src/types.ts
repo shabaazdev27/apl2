@@ -49,7 +49,9 @@ export interface UserState {
   name: string;
   avatar: string;
   xp: number;
+  coins: number;
   level: number;
+  tier: 'ROOKIE' | 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM' | 'LEGEND';
   streak: number;
   predictions: Match[];
   rank: number;
@@ -58,14 +60,19 @@ export interface UserState {
   followedTeams: string[];
   followedMatches: string[];
   notificationPrefs: NotificationPrefs;
+  challengeAccepted: boolean;
+  activeChallengeId?: string;
+  highScore?: number;
 }
 
 export interface AIChallenge {
   challengeTitle: string;
   challengeDescription: string;
   xpReward: number;
+  coinReward: number;
   personaBadge: string;
   motivationQuote: string;
+  difficulty: 'EASY' | 'MEDIUM' | 'HARD' | 'EXPERT';
 }
 
 export interface MatchInsight {

@@ -6,22 +6,29 @@ import { createServer as createViteServer } from "vite";
 import * as dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 
+import { logger, getSecret } from "./src/gcpUtils";
+
 dotenv.config();
 
-const ai = new GoogleGenAI({ 
-  apiKey: process.env.GEMINI_API_KEY as string,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
-  }
-});
-
 async function startServer() {
+  // Access secrets from GCP or fallback to .env
+  const GEMINI_API_KEY = await getSecret('GEMINI_API_KEY');
+  const CRICKET_DATA_API_KEY = await getSecret('CRICKET_DATA_API_KEY');
+
+  const ai = new GoogleGenAI({ 
+    apiKey: GEMINI_API_KEY as string,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    }
+  });
+
   const app = express();
   const server = http.createServer(app);
   const wss = new WebSocketServer({ server });
-  const PORT = 3000;
+  
+  let PORT = parseInt(process.env.PORT || '3005');
 
   app.use(express.json());
 
@@ -31,10 +38,11 @@ async function startServer() {
   };
 
   const fetchRealScores = async () => {
-    const apiKey = process.env.CRICKET_DATA_API_KEY;
+    const apiKey = CRICKET_DATA_API_KEY;
     if (!apiKey) return;
 
     try {
+      logger.info("Fetching real scores from API");
       const response = await fetch(`https://api.cricapi.com/v1/currentMatches?apikey=${apiKey}&offset=0`);
       const data: any = await response.json();
       
@@ -88,7 +96,7 @@ async function startServer() {
   };
 
   // Run real fetcher every 60 seconds if API key exists
-  if (process.env.CRICKET_DATA_API_KEY) {
+  if (CRICKET_DATA_API_KEY) {
     setInterval(fetchRealScores, 60000);
     fetchRealScores();
   }
@@ -163,6 +171,11 @@ async function startServer() {
     res.json(Object.values(liveScores));
   });
 
+  app.post("/api/rewards", (req, res) => {
+    // Basic rewards endpoint
+    res.json({ success: true, message: "Rewards processed successfully" });
+  });
+
   // AI Routes
   app.post("/api/ai/challenge", async (req, res) => {
     const { streak, xp, followedTeams, history } = req.body;
@@ -176,21 +189,22 @@ async function startServer() {
       The fan's current tournament status:
       - Streak: ${streak} days
       - XP: ${xp}
+      - Tier: ${req.body.tier || 'ROOKIE'}
       - Followed Teams: ${followedTeams?.join(", ") || "None"}
       - Recent Activity: ${history ? JSON.stringify(history) : "No predictions yet"}
-
+ 
       Task: Generate a highly personalized "Match Day Challenge".
       
       Intelligence Analysis:
       1. Identify the "Favorite Team" by looking at followedTeams and prediction patterns in history.
       2. Identify "Prediction Bias" (e.g., do they always pick the home team? Do they always pick against a certain rival?).
-      3. Challenge Level: Based on ${streak} streak, set it to: ${streak > 3 ? "ELITE" : "ROOKIE"}.
-
+      3. Challenge Level: Based on ${streak} streak and ${req.body.tier} tier, set difficulty to: ${streak > 5 ? "EXPERT" : (streak > 2 ? "HARD" : "MEDIUM")}.
+ 
       Personalization Requirements:
       - If they favor RCB, the challenge TITLE and DESCRIPTION must involve RCB.
-      - If they have a high streak, reward them with a "Legacy" badge and harder goal.
+      - If they have a high streak, reward them with a "Legendary" coin amount (e.g., 500-1000).
       - Use a "Witty Analyst" persona in the motivationQuote.
-
+ 
       Respond in JSON format.`;
 
       const result = await ai.models.generateContent({
@@ -204,10 +218,12 @@ async function startServer() {
               challengeTitle: { type: Type.STRING },
               challengeDescription: { type: Type.STRING },
               xpReward: { type: Type.NUMBER },
+              coinReward: { type: Type.NUMBER },
+              difficulty: { type: Type.STRING, enum: ["EASY", "MEDIUM", "HARD", "EXPERT"] },
               personaBadge: { type: Type.STRING },
               motivationQuote: { type: Type.STRING }
             },
-            required: ["challengeTitle", "challengeDescription", "xpReward", "personaBadge", "motivationQuote"]
+            required: ["challengeTitle", "challengeDescription", "xpReward", "coinReward", "difficulty", "personaBadge", "motivationQuote"]
           }
         }
       });
@@ -225,6 +241,8 @@ async function startServer() {
         challengeTitle: "The All-Rounder's Test",
         challengeDescription: "Predict both the winning team and the total number of sixes in the next game.",
         xpReward: 500,
+        coinReward: 200,
+        difficulty: "MEDIUM",
         personaBadge: "Steadfast Supporter",
         motivationQuote: "The AI is calculating millions of possibilities. In the meantime, trust your gut!"
       });
@@ -442,7 +460,18 @@ async function startServer() {
     if (cached) return res.json(cached);
 
     try {
-      const prompt = `The user has a prediction streak of ${streak} days. Analyze focus and give multiplier. Respond in JSON.`;
+      const prompt = `Analyze a cricket fan's engagement streak of ${streak} days. 
+      - If streak is 0-3: "Rising Talent" status, multiplier 1.0-1.2.
+      - If streak is 4-7: "Die-hard Supporter" status, multiplier 1.3-1.5.
+      - If streak is 8+: "Stadium Legend" status, multiplier 1.6-2.0.
+      
+      Requirements:
+      1. Reward Title: A thematic title for the streak.
+      2. Reward Description: A 1-sentence motivation about why their streak matters.
+      3. Multiplier: A number (e.g. 1.2) that will multiply their XP gains.
+      4. AI Commentary: A witty observation about their loyalty.
+      
+      Respond in JSON format.`;
 
       const result = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
@@ -480,6 +509,20 @@ async function startServer() {
     }
   });
 
+  app.get("/api/rewards", (req, res) => {
+    const rewards = [
+      { id: 'r1', name: 'Premium Avatar: Dragon', icon: '🐉', cost: 500, type: 'AVATAR', unlocked: false },
+      { id: 'r2', name: 'Phoenix Rebirth', icon: '🐦‍🔥', cost: 750, type: 'AVATAR', unlocked: false },
+      { id: 'r3', name: 'Titan Armor', icon: '🛡️', cost: 1000, type: 'AVATAR', unlocked: false },
+      { id: 'r4', name: 'IPL Oracle Title', icon: '🔮', cost: 1500, type: 'BADGE', unlocked: false },
+      { id: 'r5', name: 'Super Fan Badge', icon: '⭐', cost: 300, type: 'BADGE', unlocked: false },
+      { id: 'r6', name: 'Streak Freezer', icon: '🧊', cost: 2000, type: 'BOOSTER', unlocked: false },
+      { id: 'r7', name: 'Neon Match Centre Theme', icon: '🎨', cost: 1200, type: 'THEME', unlocked: false },
+      { id: 'r8', name: 'Diamond Border', icon: '💎', cost: 2500, type: 'THEME', unlocked: false },
+    ];
+    res.json(rewards);
+  });
+
   app.get("/api/leaderboard", (req, res) => {
     // Simulated BigQuery / Redis result
     const leaderboard = [
@@ -490,6 +533,25 @@ async function startServer() {
       { name: "GillPower", points: 3700, rank: 5, avatar: "🐯" },
     ];
     res.json(leaderboard);
+  });
+
+  app.get("/api/games/next-ball", (req, res) => {
+    const players = ["Kohli", "Dhoni", "Rohit", "Sky", "Rahul", "Hardik", "Maxwell", "Pant"];
+    const bowlers = ["Bumrah", "Shami", "Siraj", "Rashid", "Chahal", "Narine", "Kuldeep", "Cummins"];
+    const outcomes = ["0", "1", "2", "4", "6", "W", "WD", "NB"];
+    
+    res.json({
+      onStrike: players[Math.floor(Math.random() * players.length)],
+      bowler: bowlers[Math.floor(Math.random() * bowlers.length)],
+      situation: "Critical Death Over",
+      timestamp: Date.now()
+    });
+  });
+
+  app.post("/api/games/save-score", (req, res) => {
+    const { score, coins, xp } = req.body;
+    // In a real app, save to DB
+    res.json({ success: true, message: `Score ${score} saved! +${coins} coins, +${xp} XP.` });
   });
 
   // Vite middleware for development
@@ -507,9 +569,20 @@ async function startServer() {
     });
   }
 
-  server.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  const startListening = (port: number) => {
+    server.listen(port, "0.0.0.0", () => {
+      console.log(`Server running on http://localhost:${port}`);
+    }).on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE') {
+        console.warn(`Port ${port} is busy, trying ${port + 1}...`);
+        startListening(port + 1);
+      } else {
+        console.error("Server error:", err);
+      }
+    });
+  };
+
+  startListening(PORT);
 }
 
 startServer();

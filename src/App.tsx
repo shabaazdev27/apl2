@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Trophy, Flame, Target, User, Zap, ChevronRight, BarChart3, AlertCircle, Settings, Edit2, Save, X, Sparkles, MessageCircle, Swords, Vote as VoteIcon, Bell, BellOff, Calendar, TrendingUp, RotateCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Match, UserState, AIChallenge, MatchInsight, StreakAnalysis, Badge, Notification, NewsItem } from './types';
+import FanZone from './FanZone';
+import RewardsShowcase from './RewardsShowcase';
 
 // Mock Initial Data
 const INITIAL_BADGES: Badge[] = [
@@ -12,7 +14,7 @@ const INITIAL_BADGES: Badge[] = [
 const AVATARS = ['🦁', '🐯', '🦅', '🐺', '🐉', '⚔️', '🔥', '💎'];
 const IPL_TEAMS = ['RCB', 'CSK', 'MI', 'GT', 'LSG', 'KKR', 'SRH', 'DC', 'PBKS', 'RR'];
 
-type Tab = 'MATCHES' | 'LEADERBOARD' | 'FAN_ZONE';
+type Tab = 'MATCHES' | 'LEADERBOARD' | 'FAN_ZONE' | 'REWARDS';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('MATCHES');
@@ -21,7 +23,9 @@ export default function App() {
       name: 'HotstarFan_99',
       avatar: '🐯',
       xp: 250,
+      coins: 100,
       level: 5,
+      tier: 'BRONZE',
       streak: 3,
       predictions: [],
       rank: 124,
@@ -34,7 +38,8 @@ export default function App() {
         matchEvents: true,
         aiChallenges: true,
         gameResults: true,
-      }
+      },
+      challengeAccepted: false
     };
     const saved = localStorage.getItem('userState');
     if (saved) {
@@ -61,6 +66,7 @@ export default function App() {
     return saved ? JSON.parse(saved) : [];
   });
   const [showNotifications, setShowNotifications] = useState(false);
+  const [currentToast, setCurrentToast] = useState<Notification | null>(null);
 
   const [matches, setMatches] = useState<Match[]>([]);
   const [loadingMatches, setLoadingMatches] = useState(false);
@@ -123,16 +129,20 @@ export default function App() {
     'Equal': 20
   });
 
+
+
   const pushNotification = (title: string, message: string, type: 'match' | 'ai' | 'system') => {
     const newNotification: Notification = {
       id: Math.random().toString(36).substr(2, 9),
       title,
       message,
       type,
-      timestamp: new Date().toISOString(),
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       read: false,
     };
     setNotifications(prev => [newNotification, ...prev].slice(0, 50));
+    setCurrentToast(newNotification);
+    setTimeout(() => setCurrentToast(null), 5000);
   };
 
   const markAllRead = () => {
@@ -190,15 +200,14 @@ export default function App() {
   });
   const [loadingNews, setLoadingNews] = useState(false);
 
-  const [challengeAccepted, setChallengeAccepted] = useState(false);
   const acceptChallenge = () => {
-    setChallengeAccepted(true);
+    setUser(prev => ({ ...prev, challengeAccepted: true }));
     pushNotification('Mission Started!', 'Track your progress in the Fan Zone.', 'ai');
   };
 
   const fetchAIChallenge = async () => {
     setLoadingChallenge(true);
-    setChallengeAccepted(false);
+    setUser(prev => ({ ...prev, challengeAccepted: false }));
     try {
       const response = await fetch('/api/ai/challenge', {
         method: 'POST',
@@ -206,6 +215,7 @@ export default function App() {
         body: JSON.stringify({
           streak: user.streak,
           xp: user.xp,
+          tier: user.tier,
           followedTeams: user.followedTeams,
           history: user.predictions.map(m => ({ 
             teams: `${m.teamA} vs ${m.teamB}`, 
@@ -221,7 +231,7 @@ export default function App() {
         setUser(prev => ({ ...prev, personaBadge: data.personaBadge }));
       }
       if (user.notificationPrefs.aiChallenges) {
-        pushNotification('New AI Challenge!', data.challengeTitle, 'ai');
+        pushNotification('New AI Challenge!', `${data.challengeTitle} (${data.difficulty})`, 'ai');
       }
     } catch (err) {
       console.error(err);
@@ -446,17 +456,50 @@ export default function App() {
       
       setUser(prev => {
         const isCorrect = match.predicted === winner;
-        const xpGain = isCorrect ? 100 : 25;
+        const multiplier = streakAnalysis?.multiplier || 1;
+        let xpGain = (isCorrect ? 100 : 25) * multiplier;
+        let coinGain = (isCorrect ? 50 : 10) * multiplier;
         const newStreak = isCorrect ? prev.streak + 1 : 0;
         
+        // Challenge Bonus
+        let challengeCompleted = false;
+        if (prev.challengeAccepted && isCorrect) {
+          xpGain += (aiChallenge?.xpReward || 0);
+          coinGain += (aiChallenge?.coinReward || 0);
+          challengeCompleted = true;
+        }
+
+        const newXp = prev.xp + xpGain;
+        const newLevel = Math.floor(newXp / 100);
+        
+        // Tier Logic
+        let newTier = prev.tier;
+        if (newLevel >= 50) newTier = 'LEGEND';
+        else if (newLevel >= 30) newTier = 'PLATINUM';
+        else if (newLevel >= 20) newTier = 'GOLD';
+        else if (newLevel >= 10) newTier = 'SILVER';
+        else if (newLevel >= 5) newTier = 'BRONZE';
+
         if (prev.notificationPrefs.gameResults) {
-          pushNotification('Match Result!', `Prediction for ${match.teamA} vs ${match.teamB} was ${isCorrect ? 'CORRECT' : 'INCORRECT'}.`, 'system');
+          pushNotification('Match Result!', `Prediction for ${match.teamA} vs ${match.teamB} was ${isCorrect ? 'CORRECT' : 'INCORRECT'}. +${xpGain} XP`, 'system');
+        }
+
+        if (challengeCompleted) {
+          pushNotification('Mission Accomplished!', `You completed: ${aiChallenge?.challengeTitle}! +${aiChallenge?.coinReward} Coins`, 'ai');
+        }
+
+        if (newTier !== prev.tier) {
+          pushNotification('Promotion!', `You've been promoted to ${newTier} Tier!`, 'system');
         }
 
         return {
           ...prev,
-          xp: prev.xp + xpGain,
+          xp: newXp,
+          coins: prev.coins + coinGain,
+          level: newLevel,
+          tier: newTier,
           streak: newStreak,
+          challengeAccepted: challengeCompleted ? false : prev.challengeAccepted,
           predictions: prev.predictions.map(m => 
             m.id === matchId ? { ...m, winner, time: 'FINISHED', aiSummary: data.summary, aiReaction: data.reaction } : m
           )
@@ -473,12 +516,17 @@ export default function App() {
   const handleVote = (option: string) => {
     if (votedPoll) return;
     setVotedPoll(option);
-    setUser(prev => ({ ...prev, xp: prev.xp + 25 }));
+    setUser(prev => ({ 
+      ...prev, 
+      xp: prev.xp + 25,
+      coins: prev.coins + 5 
+    }));
     // Simulate updating weighted results
     setPollResults(prev => ({
       ...prev,
       [option]: prev[option] + 1
     }));
+    pushNotification('Vote Recorded!', 'You earned 25 XP and 5 Coins for participating in the poll.', 'system');
   };
 
   const saveProfile = () => {
@@ -513,7 +561,8 @@ export default function App() {
           {[
             { id: 'MATCHES', label: 'Match Center', icon: Swords },
             { id: 'FAN_ZONE', label: 'Fan Zone', icon: Zap },
-            { id: 'LEADERBOARD', label: 'Leaderboard', icon: Trophy },
+            { id: 'REWARDS', label: 'Vault', icon: Sparkles },
+            { id: 'LEADERBOARD', label: 'Hall of Fame', icon: Trophy },
           ].map((item) => {
             const Icon = item.icon;
             return (
@@ -628,9 +677,26 @@ export default function App() {
               </AnimatePresence>
             </div>
 
+            <div className="flex items-center gap-3 bg-white/5 border border-white/5 px-4 py-2 rounded-xl group hover:border-orange-500/50 transition-all">
+              <div className="relative">
+                <Flame className={`w-4 h-4 ${user.streak > 0 ? 'text-orange-500 fill-orange-500 animate-pulse' : 'text-gray-600'}`} />
+                {user.streak > 0 && (
+                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-orange-500 rounded-full blur-[2px] animate-ping" />
+                )}
+              </div>
+              <span className={`text-[10px] font-black uppercase tracking-widest ${user.streak > 0 ? 'text-orange-500' : 'text-gray-500'}`}>
+                {user.streak} DAY STREAK
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 bg-yellow-400/10 border border-yellow-400/20 px-4 py-2 rounded-xl">
+              <Sparkles className="w-4 h-4 text-yellow-400" />
+              <span className="text-xs font-black text-yellow-400 uppercase tracking-widest">{user.coins} COINS</span>
+            </div>
+
             <div className="flex items-center gap-2 bg-[#1f80e0]/10 border border-[#1f80e0]/20 px-4 py-2 rounded-xl">
               <Trophy className="w-4 h-4 text-[#1f80e0]" />
-              <span className="text-xs font-black text-[#1f80e0] uppercase tracking-widest">RANK #{user.rank}</span>
+              <span className="text-xs font-black text-[#1f80e0] uppercase tracking-widest">{user.tier}</span>
             </div>
 
             <button 
@@ -688,11 +754,11 @@ export default function App() {
                         <div className="flex flex-wrap items-center gap-6">
                           <button 
                             onClick={acceptChallenge}
-                            disabled={challengeAccepted}
-                            className={`group relative ${challengeAccepted ? 'bg-green-600' : 'bg-[#1f80e0] hover:bg-[#1a6dc0]'} text-white px-8 py-3 rounded-md font-bold text-sm transition-all transform active:scale-95 shadow-lg shadow-[#1f80e0]/20 overflow-hidden`}
+                            disabled={user.challengeAccepted}
+                            className={`group relative ${user.challengeAccepted ? 'bg-green-600' : 'bg-[#1f80e0] hover:bg-[#1a6dc0]'} text-white px-8 py-3 rounded-md font-bold text-sm transition-all transform active:scale-95 shadow-lg shadow-[#1f80e0]/20 overflow-hidden`}
                           >
-                            <span className="relative z-10">{challengeAccepted ? 'MISSION ACTIVE' : 'ACCEPT CHALLENGE'}</span>
-                            {!challengeAccepted && (
+                            <span className="relative z-10">{user.challengeAccepted ? 'MISSION ACTIVE' : 'ACCEPT CHALLENGE'}</span>
+                            {!user.challengeAccepted && (
                               <motion.div 
                                 initial={{ x: '-100%' }}
                                 whileHover={{ x: '100%' }}
@@ -811,7 +877,9 @@ export default function App() {
                               {match.time === 'FINISHED' ? (
                                 <div className="w-full space-y-4">
                                   <div className={`w-full py-2 rounded text-center text-xs font-black uppercase tracking-widest ${match.predicted === match.winner ? 'bg-green-500/20 text-green-500 border border-green-500/30' : 'bg-red-500/20 text-red-500 border border-red-500/30'}`}>
-                                    {match.predicted === match.winner ? 'PREDICTION CORRECT +100 XP' : 'PREDICTION FAILED +25 XP'}
+                                    {match.predicted === match.winner 
+                                      ? `PREDICTION CORRECT +${Math.round(100 * (streakAnalysis?.multiplier || 1))} XP` 
+                                      : `PREDICTION FAILED +${Math.round(25 * (streakAnalysis?.multiplier || 1))} XP`}
                                   </div>
                                   
                                   {match.aiSummary && (
@@ -1152,11 +1220,11 @@ export default function App() {
                         ) : `#${idx + 1}`}
                       </div>
                       <div className="col-span-5 flex items-center gap-4">
-                        <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center text-2xl border border-white/10 group-hover:scale-110 transition-transform">
+                        <div className="w-12 h-12 bg-white/5 rounded-2xl flex items-center justify-center text-2xl border border-white/10">
                           {player.avatar}
                         </div>
                         <div>
-                          <div className="font-black text-lg text-white group-hover:text-[#1f80e0] transition-colors">{player.name}</div>
+                          <div className="font-black text-lg text-white">{player.name}</div>
                           <div className="text-[8px] font-bold text-gray-500 uppercase tracking-widest">Active since May '24</div>
                         </div>
                       </div>
@@ -1181,201 +1249,18 @@ export default function App() {
           )}
 
           {activeTab === 'FAN_ZONE' && (
-            <motion.div 
-              key="fanzone"
-              initial={{ opacity: 0, scale: 0.98 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.98 }}
-              className="space-y-8"
-            >
-              {/* Top Bento Row */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                
-                {/* Team News Bento (Span 2) */}
-                <div className="lg:col-span-2 bg-[#0c111b] rounded-3xl border border-white/5 overflow-hidden relative group shadow-2xl glass">
-                  <div className="p-8 border-b border-white/5 flex justify-between items-center bg-white/5">
-                    <div className="flex items-center gap-4">
-                      <div className="p-3 bg-pink-500/10 rounded-2xl relative">
-                        <Zap className="w-6 h-6 text-pink-500" />
-                        <div className="absolute top-0 right-0 w-2 h-2 bg-pink-500 rounded-full animate-ping" />
-                      </div>
-                      <div>
-                        <h2 className="text-2xl font-black uppercase tracking-tighter italic">Team Dispatch</h2>
-                        <p className="text-[10px] text-gray-500 font-bold uppercase tracking-[0.2em] mt-1">Live Intelligence Feed</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <button 
-                        onClick={() => fetchTeamNews(true)}
-                        disabled={loadingNews}
-                        className="p-3 bg-white/5 hover:bg-white/10 rounded-2xl transition-colors text-white/40 hover:text-white disabled:opacity-50"
-                      >
-                        <RotateCw className={`w-4 h-4 ${loadingNews ? 'animate-spin' : ''}`} />
-                      </button>
-                    </div>
-                  </div>
+            <FanZone 
+              userState={user} 
+              setUserState={setUser} 
+              pollResults={pollResults} 
+              handleVote={handleVote} 
+              votedPoll={votedPoll}
+              acceptChallenge={acceptChallenge}
+            />
+          )}
 
-                  <div className="p-8">
-                    {user.followedTeams.length === 0 ? (
-                      <div className="text-center py-16 bg-white/[0.02] rounded-3xl border-2 border-dashed border-white/5">
-                        <BellOff className="w-12 h-12 text-gray-800 mx-auto mb-6 opacity-20" />
-                        <h3 className="text-lg font-black text-white mb-2 uppercase tracking-tight">Empty Signal</h3>
-                        <p className="text-xs text-gray-500 max-w-sm mx-auto font-medium">Follow teams in settings to unlock exclusive AI dispatches.</p>
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        {teamNews.map((news, idx) => (
-                          <motion.div 
-                            key={news.id}
-                            whileHover={{ y: -4 }}
-                            className="p-6 bg-white/[0.03] rounded-2xl border border-white/10 hover:border-[#1f80e0]/40 transition-all group flex flex-col h-full glass"
-                          >
-                            <div className="flex justify-between items-start mb-4">
-                              <span className="text-[9px] font-black italic uppercase tracking-widest text-[#1f80e0] bg-[#1f80e0]/10 px-2.5 py-1 rounded-lg border border-[#1f80e0]/20">
-                                {news.team}
-                              </span>
-                              <span className="text-[9px] font-bold text-gray-600 uppercase tracking-widest">{news.source}</span>
-                            </div>
-                            <h3 className="text-sm font-black text-white mb-2 leading-tight uppercase group-hover:text-[#1f80e0] transition-colors">{news.title}</h3>
-                            <p className="text-xs text-gray-400 leading-relaxed font-light flex-grow italic mb-4 line-clamp-3 opacity-80">"{news.snippet}"</p>
-                            <div className="flex flex-wrap gap-2 pt-4 border-t border-white/5">
-                              {news.tags.slice(0, 2).map(tag => (
-                                <span key={tag} className="text-[8px] font-bold text-gray-500 uppercase tracking-tight">#{tag}</span>
-                              ))}
-                            </div>
-                          </motion.div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Vote Center Bento */}
-                <div className="bg-[#0c111b] rounded-3xl p-8 border border-white/5 flex flex-col shadow-2xl glass relative overflow-hidden group">
-                  <div className="relative z-10 flex flex-col h-full">
-                    <div className="w-12 h-12 bg-[#1f80e0]/10 rounded-2xl flex items-center justify-center border border-[#1f80e0]/20 mb-8 group-hover:scale-110 transition-transform">
-                      <VoteIcon className="w-6 h-6 text-[#1f80e0]" />
-                    </div>
-                    <h3 className="text-2xl font-black uppercase tracking-tighter italic mb-4">Match Day Poll</h3>
-                    <p className="text-gray-500 text-sm mb-10 leading-relaxed font-medium">Community sentiments matter. Who takes the wickets today?</p>
-                    
-                    <div className="space-y-3 flex-1">
-                      {['Spinners', 'Pacers', 'Equal'].map(opt => {
-                        const totalValues = Object.values(pollResults) as number[];
-                        const totalVotes = totalValues.reduce((a, b) => a + b, 0);
-                        const percentage = totalVotes > 0 ? Math.round(((pollResults[opt] || 0) / totalVotes) * 100) : 0;
-                        
-                        return (
-                          <button 
-                            key={opt} 
-                            disabled={!!votedPoll}
-                            onClick={() => handleVote(opt)}
-                            className={`relative w-full py-4 rounded-xl overflow-hidden group transition-all border ${votedPoll === opt ? 'border-[#1f80e0] bg-[#1f80e0]/5' : 'border-white/5 bg-white/5 hover:border-white/20'}`}
-                          >
-                            {votedPoll && (
-                              <motion.div 
-                                initial={{ width: 0 }}
-                                animate={{ width: `${percentage}%` }}
-                                className={`absolute inset-0 opacity-10 ${votedPoll === opt ? 'bg-[#1f80e0]' : 'bg-gray-400'}`}
-                              />
-                            )}
-                            <div className="relative z-10 flex justify-between px-6 items-center">
-                              <span className={`text-[10px] font-black uppercase tracking-widest ${votedPoll === opt ? 'text-[#1f80e0]' : 'text-gray-500 group-hover:text-white'}`}>{opt}</span>
-                              {votedPoll && <span className="text-xs font-black text-white">{percentage}%</span>}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {votedPoll && (
-                      <div className="mt-8 pt-8 border-t border-white/5">
-                        <p className="text-[10px] font-black text-[#1f80e0] uppercase tracking-widest text-center flex items-center gap-2 justify-center">
-                          <Sparkles className="w-3 h-3" />
-                          Pulse recorded +25 XP
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                  <div className="absolute top-0 right-0 w-32 h-32 bg-[#1f80e0]/5 blur-[60px] rounded-full -mr-10 -mt-10" />
-                </div>
-              </div>
-
-              {/* Bottom Bento Row */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                
-                {/* Streak Center (Span 2) */}
-                <div className="lg:col-span-2 bg-[#0c111b] rounded-3xl p-10 border border-white/5 relative overflow-hidden group shadow-2xl glass">
-                  <div className="relative z-10 flex flex-col lg:flex-row gap-10 items-center">
-                    <div className="shrink-0 text-center lg:text-left">
-                      <div className="w-20 h-20 bg-orange-500/10 rounded-[2.5rem] flex items-center justify-center border border-orange-500/20 mb-6 mx-auto lg:mx-0 shadow-[0_0_30px_rgba(249,115,22,0.1)]">
-                        <Flame className="w-10 h-10 text-orange-500" />
-                      </div>
-                      <div className="px-4 py-2 rounded-full bg-orange-500/10 border border-orange-500/20 text-orange-500 font-black text-xs uppercase tracking-widest shadow-lg shadow-orange-500/5">
-                        {user.streak} DAY STREAK
-                      </div>
-                    </div>
-
-                    <div className="flex-1 space-y-6">
-                      {streakAnalysis ? (
-                        <>
-                          <div>
-                            <h3 className="text-2xl font-black italic uppercase tracking-tighter text-[#1f80e0] mb-2">{streakAnalysis.rewardTitle}</h3>
-                            <p className="text-gray-400 text-md leading-relaxed font-medium">{streakAnalysis.rewardDescription}</p>
-                          </div>
-                          <div className="flex items-center gap-6">
-                            <div className="flex items-end gap-2">
-                              <span className="text-4xl font-black italic text-orange-500">x{streakAnalysis.multiplier}</span>
-                              <span className="text-[10px] text-gray-600 mb-2 uppercase font-black tracking-widest">XP Power</span>
-                            </div>
-                            <div className="h-8 w-px bg-white/10" />
-                            <p className="text-xs text-orange-200/40 italic font-medium leading-relaxed max-w-sm">"{streakAnalysis.aiCommentary}"</p>
-                          </div>
-                        </>
-                      ) : (
-                        <div className="animate-pulse flex flex-col gap-4">
-                          <div className="h-8 bg-white/5 w-1/2 rounded-lg" />
-                          <div className="h-12 bg-white/5 w-full rounded-lg" />
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="absolute -bottom-10 -right-10 w-64 h-64 bg-orange-500/5 blur-[100px] rounded-full pointer-events-none" />
-                </div>
-
-                {/* Live Social Bento */}
-                <div className="bg-[#0c111b] rounded-3xl p-8 border border-white/5 shadow-2xl glass flex flex-col group">
-                  <div className="flex items-center gap-3 mb-8">
-                    <div className="w-10 h-10 bg-[#1f80e0]/10 rounded-xl flex items-center justify-center border border-[#1f80e0]/20">
-                      <MessageCircle className="w-5 h-5 text-[#1f80e0]" />
-                    </div>
-                    <div>
-                      <h3 className="text-xl font-black uppercase tracking-tighter italic">Live Pulse</h3>
-                      <p className="text-[8px] text-gray-500 font-bold uppercase tracking-widest">Global Fan Activity</p>
-                    </div>
-                  </div>
-                  <div className="space-y-6 flex-1 overflow-y-auto max-h-[300px] pr-2 custom-scrollbar">
-                    {[
-                      { user: 'Raina_Sup', text: 'CSK looking strong in the nets today!', time: '2m', avatar: '🦁' },
-                      { user: 'Kohli_King', text: 'RCB 200+ today for sure 🚀', time: '5m', avatar: '👑' },
-                      { user: 'MI_Forever', text: 'Blue army let\'s goooo 💙', time: '10m', avatar: '🌊' },
-                    ].map((msg, idx) => (
-                      <div key={idx} className="flex gap-4 items-start group/msg transition-all hover:translate-x-2">
-                        <div className="w-10 h-10 rounded-xl bg-white/5 shrink-0 flex items-center justify-center text-lg border border-white/5 group-hover/msg:border-[#1f80e0]/30 transition-colors">
-                          {msg.avatar}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="font-black text-[10px] text-white uppercase tracking-tight">{msg.user}</span>
-                            <span className="text-[8px] text-gray-600 uppercase font-bold">{msg.time}</span>
-                          </div>
-                          <p className="text-xs text-gray-400 font-medium leading-relaxed italic truncate">"{msg.text}"</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </motion.div>
+          {activeTab === 'REWARDS' && (
+            <RewardsShowcase userState={user} setUserState={setUser} />
           )}
         </AnimatePresence>
 
@@ -1523,6 +1408,32 @@ export default function App() {
               </div>
             </motion.div>
           </div>
+        )}
+      </AnimatePresence>
+
+      {/* Floating Toast Notification */}
+      <AnimatePresence>
+        {currentToast && (
+          <motion.div 
+            initial={{ opacity: 0, x: 100 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 100 }}
+            className="fixed top-24 right-10 z-[100] w-80 bg-[#0c111b] border border-[#1f80e0]/30 rounded-2xl p-4 shadow-2xl shadow-[#1f80e0]/10 glass flex gap-4 items-center cursor-pointer"
+            onClick={() => setCurrentToast(null)}
+          >
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+              currentToast.type === 'ai' ? 'bg-[#1f80e0]/10 text-[#1f80e0]' : 
+              currentToast.type === 'match' ? 'bg-pink-500/10 text-pink-500' : 'bg-green-500/10 text-green-500'
+            }`}>
+              {currentToast.type === 'ai' ? <Sparkles className="w-5 h-5" /> : 
+               currentToast.type === 'match' ? <Zap className="w-5 h-5" /> : <Trophy className="w-5 h-5" />}
+            </div>
+            <div>
+              <h4 className="text-[10px] font-black uppercase tracking-widest text-white mb-1">{currentToast.title}</h4>
+              <p className="text-[11px] text-gray-400 font-medium leading-tight">{currentToast.message}</p>
+            </div>
+            <div className="absolute top-0 left-0 h-full w-1 bg-[#1f80e0] rounded-l-2xl" />
+          </motion.div>
         )}
       </AnimatePresence>
     </div>
